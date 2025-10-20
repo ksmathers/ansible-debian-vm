@@ -1,0 +1,14 @@
+---
+# VM Configuration Variables
+vm_base_name: "debian-vm"
+vm_memory: 2048
+vm_cores: 2
+vm_sockets: 1
+vm_cpu_type: "host"
+vm_disk_size: "20"
+vm_disk_format: "raw"
+vm_storage: "local-lvm"
+vm_network_bridge: "vmbr0"
+
+# ProxmoxVE Configuration
+debian_iso_pattern: "*debian*.iso"

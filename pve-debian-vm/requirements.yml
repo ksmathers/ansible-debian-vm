@@ -1,0 +1,15 @@
+# Ansible requirements for ProxmoxVE VM creation
+
+# Core Ansible collections
+collections:
+  - name: community.general
+    version: ">=7.0.0"
+  - name: ansible.posix
+    version: ">=1.5.0"
+
+# Python requirements (if using pip)
+# Install with: pip install -r requirements.txt
+requirements:
+  - ansible>=7.0.0
+  - requests>=2.25.0
+  - urllib3>=1.26.0

@@ -1,0 +1,459 @@
+- name: Create Debian VM on ProxmoxVE
+  hosts: "{{ target_host }}"
+  gather_facts: true
+  vars_files:
+    - vars.yml
+  
+  tasks:
+    - name: VM Creation Block
+      block:
+        - name: Generate unique VM ID
+          set_fact:
+            vm_id: "{{ 100 + (ansible_date_time.epoch | int) % 900 }}"
+          delegate_to: localhost
+          run_once: true
+
+        - name: Set VM name with timestamp
+          set_fact:
+            vm_name: "{{ vm_base_name }}-{{ ansible_date_time.epoch }}"
+
+        - name: Test ProxmoxVE API connectivity
+          uri:
+            url: "https://{{ proxmox_api_host }}:{{ proxmox_api_port }}/api2/json/version"
+            method: GET
+            headers:
+              Authorization: "PVEAPIToken={{ proxmox_api_user }}!{{ proxmox_api_token_id }}={{ proxmox_api_secret }}"
+            validate_certs: false
+            status_code: 200
+          register: api_test
+          failed_when: api_test.status != 200
+
+        - name: Display API connection success and authentication details
+          debug:
+            msg: |
+              Successfully connected to ProxmoxVE API on {{ proxmox_api_host }}
+              API User: {{ proxmox_api_user }}
+              Token ID: {{ proxmox_api_token_id }}
+              ProxmoxVE Version: {{ api_test.json.data.version }}
+
+        - name: Generate random component for VM ID uniqueness
+          set_fact:
+            random_component: "{{ 999999 | random }}"
+
+        - name: Use more unique VM ID to avoid conflicts
+          set_fact:
+            vm_id: "{{ 100 + (random_component | int) % 800 }}"
+
+        - name: Display selected VM ID
+          debug:
+            msg: "Selected VM ID: {{ vm_id }}"
+
+        - name: Create temporary directory for ISO
+          file:
+            path: "/tmp/vm-{{ vm_id }}"
+            state: directory
+            mode: '0755'
+          register: temp_dir_result
+          failed_when: temp_dir_result.failed
+
+        - name: Copy preseed.cfg to temporary directory
+          copy:
+            src: preseed.cfg
+            dest: "/tmp/vm-{{ vm_id }}/preseed.cfg"
+            mode: '0644'
+          register: preseed_copy_result
+          failed_when: preseed_copy_result.failed
+
+        - name: Find Debian ISO in shared storage
+          shell: |
+            find /mnt/pve/drivep-public -name "*.iso" -type f | grep -i debian | head -1
+          register: debian_iso_path
+          failed_when: debian_iso_path.stdout == "" or debian_iso_path.rc != 0
+
+        - name: Display found Debian ISO
+          debug:
+            msg: "Found Debian ISO: {{ debian_iso_path.stdout }}"
+
+        - name: Verify Debian ISO file exists and is readable
+          stat:
+            path: "{{ debian_iso_path.stdout }}"
+          register: iso_stat
+          failed_when: not iso_stat.stat.exists or not iso_stat.stat.readable
+
+        - name: Create custom ISO directory structure
+          file:
+            path: "/tmp/vm-{{ vm_id }}/iso-content"
+            state: directory
+            mode: '0755'
+          register: iso_dir_result
+          failed_when: iso_dir_result.failed
+
+        - name: Create mount point for original ISO
+          file:
+            path: "/tmp/vm-{{ vm_id }}/iso-mount"
+            state: directory
+            mode: '0755'
+          register: mount_dir_result
+          failed_when: mount_dir_result.failed
+
+        - name: Mount original Debian ISO
+          mount:
+            path: "/tmp/vm-{{ vm_id }}/iso-mount"
+            src: "{{ debian_iso_path.stdout }}"
+            fstype: iso9660
+            opts: loop,ro
+            state: mounted
+          register: mount_result
+          failed_when: mount_result.failed
+
+        - name: Verify ISO mount contains expected files
+          stat:
+            path: "/tmp/vm-{{ vm_id }}/iso-mount/isolinux"
+          register: isolinux_check
+          failed_when: not isolinux_check.stat.exists
+
+        - name: Copy ISO contents to working directory
+          shell: |
+            cp -r /tmp/vm-{{ vm_id }}/iso-mount/* /tmp/vm-{{ vm_id }}/iso-content/
+          register: copy_result
+          failed_when: copy_result.rc != 0
+
+        - name: Verify ISO content was copied successfully
+          stat:
+            path: "/tmp/vm-{{ vm_id }}/iso-content/isolinux"
+          register: copied_isolinux_check
+          failed_when: not copied_isolinux_check.stat.exists
+
+        - name: Verify install directory exists
+          stat:
+            path: "/tmp/vm-{{ vm_id }}/iso-content/install.amd"
+          register: install_dir_check
+          failed_when: not install_dir_check.stat.exists
+
+        - name: Verify kernel and initrd exist
+          stat:
+            path: "/tmp/vm-{{ vm_id }}/iso-content/install.amd/{{ item }}"
+          register: install_files_check
+          failed_when: not install_files_check.stat.exists
+          loop:
+            - vmlinuz
+            - initrd.gz
+
+        - name: Unmount original ISO
+          mount:
+            path: "/tmp/vm-{{ vm_id }}/iso-mount"
+            state: unmounted
+          register: unmount_result
+          failed_when: unmount_result.failed
+
+        - name: Copy preseed.cfg to ISO content root
+          copy:
+            src: "/tmp/vm-{{ vm_id }}/preseed.cfg"
+            dest: "/tmp/vm-{{ vm_id }}/iso-content/preseed.cfg"
+            remote_src: true
+          register: preseed_to_iso_result
+          failed_when: preseed_to_iso_result.failed
+
+        - name: Copy preseed.cfg to install.amd directory
+          copy:
+            src: "/tmp/vm-{{ vm_id }}/preseed.cfg"
+            dest: "/tmp/vm-{{ vm_id }}/iso-content/install.amd/preseed.cfg"
+            remote_src: true
+          register: preseed_to_install_result
+          failed_when: preseed_to_install_result.failed
+
+        - name: Copy preseed.cfg to isolinux directory
+          copy:
+            src: "/tmp/vm-{{ vm_id }}/preseed.cfg"
+            dest: "/tmp/vm-{{ vm_id }}/iso-content/isolinux/preseed.cfg"
+            remote_src: true
+          register: preseed_to_isolinux_result
+          failed_when: preseed_to_isolinux_result.failed
+
+        - name: Mount original Debian ISO to copy .disk directory
+          mount:
+            path: /tmp/original_debian
+            src: "{{ debian_iso_path.stdout }}"
+            fstype: iso9660
+            opts: loop,ro
+            state: mounted
+
+        - name: Copy .disk directory from original ISO (required for installer validation)
+          shell: "cp -r /tmp/original_debian/.disk /tmp/vm-{{ vm_id }}/iso-content/"
+
+        - name: Copy preseed.cfg to initrd directory as well (fallback location)
+          copy:
+            src: "/tmp/vm-{{ vm_id }}/preseed.cfg"
+            dest: "/tmp/vm-{{ vm_id }}/iso-content/install.amd/preseed.cfg"
+            remote_src: true
+
+        - name: Unmount original Debian ISO
+          mount:
+            path: /tmp/original_debian
+            state: unmounted
+
+        - name: Backup original isolinux.cfg
+          copy:
+            src: "/tmp/vm-{{ vm_id }}/iso-content/isolinux/isolinux.cfg"
+            dest: "/tmp/vm-{{ vm_id }}/iso-content/isolinux/isolinux.cfg.bak"
+            remote_src: true
+          register: backup_result
+          failed_when: backup_result.failed
+
+        - name: Create new isolinux.cfg for full automation
+          copy:
+            dest: "/tmp/vm-{{ vm_id }}/iso-content/isolinux/isolinux.cfg"
+            content: |
+              default auto
+              timeout 1
+              prompt 0
+              
+              label auto
+                menu label ^Automated Install
+                kernel /install.amd/vmlinuz
+                append initrd=/install.amd/initrd.gz auto=true priority=critical preseed/file=/cdrom/preseed.cfg preseed/interactive=false debconf/frontend=noninteractive cdrom-detect/load_media=false cdrom-detect/manual=true cdrom-detect/try-usb=false hw-detect/load_firmware=false debian-installer/allow_unauthenticated=true netcfg/do_not_use_netplan=true console-setup/ask_detect=false console-keymaps-at/keymap=us -- quiet
+              
+              label install
+                menu label ^Install
+                kernel /install.amd/vmlinuz
+                append initrd=/install.amd/initrd.gz
+          register: isolinux_create_result
+          failed_when: isolinux_create_result.failed
+
+        - name: Create txt.cfg for SYSLINUX compatibility
+          copy:
+            dest: "/tmp/vm-{{ vm_id }}/iso-content/isolinux/txt.cfg"
+            content: |
+              default auto
+              label auto
+                menu label ^Automated Install
+                kernel /install.amd/vmlinuz
+                append initrd=/install.amd/initrd.gz auto=true priority=critical preseed/file=/cdrom/preseed.cfg preseed/interactive=false debconf/frontend=noninteractive cdrom-detect/load_media=false cdrom-detect/manual=true cdrom-detect/try-usb=false hw-detect/load_firmware=false debian-installer/allow_unauthenticated=true netcfg/do_not_use_netplan=true console-setup/ask_detect=false console-keymaps-at/keymap=us -- quiet
+              
+              label install
+                menu label ^Install  
+                kernel /install.amd/vmlinuz
+                append initrd=/install.amd/initrd.gz
+          register: txt_cfg_result
+          failed_when: txt_cfg_result.failed
+
+        - name: Ensure required tools are available
+          package:
+            name: 
+              - genisoimage
+              - wodim
+            state: present
+
+        - name: Set custom ISO path
+          set_fact:
+            custom_iso_path: "/var/lib/vz/template/iso/debian-custom-{{ vm_id }}.iso"
+
+        - name: Extract original volume label from Debian ISO
+          shell: "isoinfo -d -i '{{ debian_iso_path.stdout }}' | grep 'Volume id' | cut -d: -f2 | xargs"
+          register: original_volume_label
+          failed_when: original_volume_label.rc != 0
+
+        - name: Display extracted volume label
+          debug:
+            msg: "Original Debian ISO volume label: '{{ original_volume_label.stdout }}'"
+
+        - name: Verify genisoimage is available
+          command: which genisoimage
+          register: genisoimage_check
+          failed_when: genisoimage_check.rc != 0
+
+        - name: Create custom bootable ISO with original volume label
+          shell: |
+            cd "/tmp/vm-{{ vm_id }}/iso-content"
+            genisoimage -r -J -b isolinux/isolinux.bin -c isolinux/boot.cat \
+              -no-emul-boot -boot-load-size 4 -boot-info-table \
+              -V "{{ original_volume_label.stdout }}" \
+              -o "{{ custom_iso_path }}" .
+          register: iso_creation_result
+          failed_when: iso_creation_result.rc != 0
+
+        - name: Verify custom ISO was created successfully
+          stat:
+            path: "/var/lib/vz/template/iso/debian-custom-{{ vm_id }}.iso"
+          register: custom_iso_check
+          failed_when: not custom_iso_check.stat.exists or custom_iso_check.stat.size == 0
+
+        - name: Display custom ISO information
+          debug:
+            msg: "Custom ISO created: /var/lib/vz/template/iso/debian-custom-{{ vm_id }}.iso ({{ custom_iso_check.stat.size }} bytes)"
+
+        - name: Display VM creation request details
+          debug:
+            msg: |
+              Attempting to create VM with the following details:
+              API URL: https://{{ proxmox_api_host }}:{{ proxmox_api_port }}/api2/json/nodes/{{ proxmox_node }}/qemu
+              API User: {{ proxmox_api_user }}
+              Token ID: {{ proxmox_api_token_id }}
+              VM ID: {{ vm_id }}
+              VM Name: {{ vm_name }}
+              Node: {{ proxmox_node }}
+
+        - name: Create VM
+          uri:
+            url: "https://{{ proxmox_api_host }}:{{ proxmox_api_port }}/api2/json/nodes/{{ proxmox_node }}/qemu"
+            method: POST
+            headers:
+              Authorization: "PVEAPIToken={{ proxmox_api_user }}!{{ proxmox_api_token_id }}={{ proxmox_api_secret }}"
+              Content-Type: "application/x-www-form-urlencoded"
+            body_format: form-urlencoded
+            body:
+              vmid: "{{ vm_id }}"
+              name: "{{ vm_name }}"
+              memory: "{{ vm_memory }}"
+              cores: "{{ vm_cores }}"
+              sockets: "{{ vm_sockets }}"
+              cpu: "{{ vm_cpu_type }}"
+              ostype: "l26"
+              net0: "virtio,bridge={{ vm_network_bridge }}"
+              scsi0: "{{ vm_storage }}:{{ vm_disk_size }},format={{ vm_disk_format }}"
+              scsihw: "virtio-scsi-pci"
+              bootdisk: "scsi0"
+              boot: "order=scsi0;ide2"
+              ide2: "local:iso/debian-custom-{{ vm_id }}.iso,media=cdrom"
+            validate_certs: false
+            status_code: [200]
+          register: vm_create_result
+          failed_when: vm_create_result.status != 200
+
+        - name: Display VM creation error details if failed
+          debug:
+            msg: |
+              VM Creation FAILED!
+              Status Code: {{ vm_create_result.status | default('N/A') }}
+              Error Message: {{ vm_create_result.json.message | default('N/A') }}
+              Full Response: {{ vm_create_result.json | default('N/A') }}
+              API User: {{ proxmox_api_user }}
+              Token: {{ proxmox_api_token_id }}
+          when: vm_create_result.status != 200
+          failed_when: true
+
+        - name: Start VM
+          uri:
+            url: "https://{{ proxmox_api_host }}:{{ proxmox_api_port }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id }}/status/start"
+            method: POST
+            headers:
+              Authorization: "PVEAPIToken={{ proxmox_api_user }}!{{ proxmox_api_token_id }}={{ proxmox_api_secret }}"
+            validate_certs: false
+            status_code: 200
+          register: vm_start_result
+          failed_when: vm_start_result.status != 200
+
+        - name: Display VM start success
+          debug:
+            msg: "VM {{ vm_id }} started successfully. Waiting for it to become running..."
+
+        - name: Wait for VM to start
+          uri:
+            url: "https://{{ proxmox_api_host }}:{{ proxmox_api_port }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id }}/status/current"
+            method: GET
+            headers:
+              Authorization: "PVEAPIToken={{ proxmox_api_user }}!{{ proxmox_api_token_id }}={{ proxmox_api_secret }}"
+            validate_certs: false
+          register: vm_status
+          until: vm_status.json is defined and vm_status.json.data is defined and vm_status.json.data.status == "running"
+          retries: 30
+          delay: 10
+
+        - name: Clean up temporary files
+          file:
+            path: "/tmp/vm-{{ vm_id }}"
+            state: absent
+          register: cleanup_result
+          failed_when: cleanup_result.failed
+
+        - name: Verify cleanup completed
+          stat:
+            path: "/tmp/vm-{{ vm_id }}"
+          register: cleanup_check
+          failed_when: cleanup_check.stat.exists
+
+        - name: Display success message
+          debug:
+            msg: |
+              ✅ VM {{ vm_name }} (ID: {{ vm_id }}) created successfully on {{ proxmox_node }}!
+              
+              Next steps:
+              1. Wait for VM to boot (this may take a few minutes)
+              2. Access via ProxmoxVE web interface
+              3. Login credentials: root/debian or debian/debian
+              4. SSH will be enabled on boot
+              
+              VM Configuration:
+              - Memory: {{ vm_memory }}MB
+              - CPU Cores: {{ vm_cores }}
+              - Storage: {{ vm_storage }}:{{ vm_disk_size }} ({{ vm_disk_format }})
+              - Network: {{ vm_network_bridge }}
+
+        - name: Display VM information
+          debug:
+            msg: |
+              ========================================
+              VM CREATION COMPLETED SUCCESSFULLY!
+              ========================================
+              VM ID: {{ vm_id }}
+              VM Name: {{ vm_name }}
+              Node: {{ proxmox_node }}
+              Status: {{ vm_status.json.data.status }}
+              Custom ISO: /var/lib/vz/template/iso/debian-custom-{{ vm_id }}.iso
+              
+              The VM is now installing Debian automatically.
+              Installation will take approximately 10-15 minutes.
+              
+              Once installation is complete, you can access the VM with:
+              - Username: root / Password: debian
+              - Username: debian / Password: debian
+              
+              Monitor progress at: https://{{ proxmox_api_host }}:8006
+              ========================================
+
+      rescue:
+        - name: Display troubleshooting information
+          debug:
+            msg: |
+              ❌ VM Creation Failed! 
+              
+              DIAGNOSED ISSUE: API Token Permissions
+              Your token '{{ proxmox_api_token_id }}' can authenticate but lacks VM creation permissions.
+              
+              SOLUTION - Fix API Token Permissions:
+              1. Log into ProxmoxVE web interface as administrator
+              2. Go to: Datacenter → Permissions → API Tokens
+              3. Find your token: {{ proxmox_api_user }}!{{ proxmox_api_token_id }}
+              4. Either:
+                 
+                 OPTION A - Assign Administrator Role:
+                 - Click on the token
+                 - Change Role to: Administrator
+                 - Apply changes
+                 
+                 OPTION B - Create Custom Role:
+                 - Go to: Datacenter → Permissions → Roles
+                 - Create new role with these permissions:
+                   ✓ VM.Allocate (create VMs)
+                   ✓ VM.Config.Disk (configure disks)
+                   ✓ VM.Config.CPU (configure CPU)
+                   ✓ VM.Config.Memory (configure memory)
+                   ✓ VM.Config.Network (configure network)
+                   ✓ VM.Config.Options (configure boot options)
+                   ✓ Datastore.AllocateSpace (create disk storage)
+                   ✓ Datastore.Audit (read storage info)
+                   ✓ Sys.Audit (read system info)
+                 - Assign this role to your API token
+              
+              5. Test permissions with:
+                 curl -k -X POST -H 'Authorization: PVEAPIToken={{ proxmox_api_user }}!{{ proxmox_api_token_id }}={{ proxmox_api_secret }}' \
+                      -H 'Content-Type: application/x-www-form-urlencoded' \
+                      -d 'vmid=999&name=test-vm&memory=1024&cores=1' \
+                      "https://{{ proxmox_api_host }}:{{ proxmox_api_port }}/api2/json/nodes/{{ proxmox_node }}/qemu"
+              
+              Current Authentication:
+              - API User: {{ proxmox_api_user }}
+              - Token ID: {{ proxmox_api_token_id }}
+              - Target Node: {{ proxmox_node }}
+              - API Host: {{ proxmox_api_host }}:{{ proxmox_api_port }}
+          failed_when: true

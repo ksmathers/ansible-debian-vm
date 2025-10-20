@@ -1,0 +1,25 @@
+---
+all:
+  hosts:
+    tango.ank.com:
+      ansible_host: tango.ank.com
+      ansible_user: root
+      ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+      proxmox_node: tango
+    victor.ank.com:
+      ansible_host: victor.ank.com
+      ansible_user: root
+      ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+      proxmox_node: victor
+    xray.ank.com:
+      ansible_host: xray.ank.com
+      ansible_user: root
+      ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+      proxmox_node: xray
+  vars:
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+    proxmox_api_user: ansible@pve
+    proxmox_api_token_id: automation
+    proxmox_api_secret: 6e86a0d8-6939-4239-9f80-1b47b407874f
+    proxmox_api_host: "{{ ansible_host }}"
+    proxmox_api_port: 8006
