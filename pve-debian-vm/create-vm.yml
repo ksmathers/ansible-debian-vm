@@ -232,6 +232,20 @@
             dest: "/tmp/vm-{{ vm_id }}/iso-content/install.amd/preseed.cfg"
             remote_src: true
 
+        - name: Create scripts directory in ISO content
+          file:
+            path: "/tmp/vm-{{ vm_id }}/iso-content/scripts"
+            state: directory
+            mode: '0755'
+
+        - name: Copy configuration scripts to ISO
+          copy:
+            src: "scripts/"
+            dest: "/tmp/vm-{{ vm_id }}/iso-content/scripts/"
+            mode: '0755'
+          register: scripts_copy_result
+          failed_when: scripts_copy_result.failed
+
         - name: Unmount original Debian ISO
           mount:
             path: /tmp/original_debian
