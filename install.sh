@@ -19,6 +19,7 @@ DRY_RUN=false
 HOSTNAME=""
 VM_IP=""
 USE_STATIC_IP=false
+CONSOLE_PASSWORD="debian" # Default console password
 
 # Function to convert memory units to MB
 convert_memory_to_mb() {
@@ -110,6 +111,7 @@ generate_config_summary() {
     echo "   Password Auth: ❌ Disabled"
     echo "   Root SSH: ✅ Enabled (key-only)"
     echo "   User Account: debian (key-only)"
+    echo "   User Password: $CONSOLE_PASSWORD (console login only)"
     echo ""
     
     # Display installation details
@@ -191,10 +193,21 @@ convert_disk_to_gb() {
     fi
 }
 
+# Function to hash passwords for preseed
+hash_password() {
+    local password="$1"
+    # Use mkpasswd if available, otherwise use openssl
+    if command -v mkpasswd >/dev/null 2>&1; then
+        mkpasswd --method=sha-512 "$password"
+    else
+        openssl passwd -6 "$password"
+    fi
+}
+
 # Function to show usage
 show_usage() {
     echo "Usage: $0 [OPTIONS] <project_directory> <target_node>"
-    echo "Example: $0 --hostname=jinx.ank.com --mem=4G --disk=40G --cpus=4 pve-debian-vm tango.ank.com"
+    echo "Example: $0 --hostname=jinx.ank.com --mem=4G --disk=40G --cpus=4 --password=mypassword pve-debian-vm tango.ank.com"
     echo ""
     echo "Options:"
     echo "  --hostname=NAME   VM hostname (e.g., jinx.ank.com)"
@@ -206,6 +219,8 @@ show_usage() {
     echo "                    Examples: --disk=100G, --disk=2T"
     echo "  --cpus=N          Number of CPU cores (default: $DEFAULT_CPU_CORES)"
     echo "                    Examples: --cpus=4, --cpus=8"
+    echo "  --password=PASS   Console password for debian user (default: debian)"
+    echo "                    Used for console login when SSH is not available"
     echo "  --dry-run         Show what would be done without executing"
     echo "  -h, --help        Show this help message"
     echo ""
@@ -252,6 +267,14 @@ while [[ $# -gt 0 ]]; do
             CPU_CORES="${1#*=}"
             if ! [[ "$CPU_CORES" =~ ^[1-9][0-9]*$ ]]; then
                 echo "Error: CPU cores must be a positive integer" >&2
+                exit 1
+            fi
+            shift
+            ;;
+        --password=*)
+            CONSOLE_PASSWORD="${1#*=}"
+            if [ -z "$CONSOLE_PASSWORD" ]; then
+                echo "Error: Password cannot be empty" >&2
                 exit 1
             fi
             shift
@@ -386,6 +409,13 @@ echo "CPU Cores: $CPU_CORES"
 echo "Disk Size: ${DISK_SIZE_GB}GB"
 echo "Timestamp: $(date)"
 
+# Generate password hash for preseed
+CONSOLE_PASSWORD_HASH=$(hash_password "$CONSOLE_PASSWORD")
+if [ -z "$CONSOLE_PASSWORD_HASH" ]; then
+    echo "Error: Failed to generate password hash" >&2
+    exit 1
+fi
+
 if [ "$DRY_RUN" = true ]; then
     echo ""
     echo "Generating VM configuration preview..."
@@ -400,6 +430,7 @@ if [ "$DRY_RUN" = true ]; then
         --extra-vars "vm_fqdn=$HOSTNAME" \
         --extra-vars "vm_static_ip=$VM_IP" \
         --extra-vars "vm_use_static_ip=$USE_STATIC_IP" \
+        --extra-vars "console_password_hash=$CONSOLE_PASSWORD_HASH" \
         --extra-vars "dry_run_mode=true" \
         --limit "$TARGET_NODE" \
         --check \
@@ -425,6 +456,7 @@ else
         --extra-vars "vm_fqdn=$HOSTNAME" \
         --extra-vars "vm_static_ip=$VM_IP" \
         --extra-vars "vm_use_static_ip=$USE_STATIC_IP" \
+        --extra-vars "console_password_hash=$CONSOLE_PASSWORD_HASH" \
         --limit "$TARGET_NODE" \
         -v
 fi

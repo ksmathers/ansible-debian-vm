@@ -61,10 +61,10 @@ d-i apt-setup/disable-cdrom-entries boolean true
 
 # Account setup - SSH key authentication will be configured in late_command
 d-i passwd/root-login boolean true
-d-i passwd/root-password-crypted password $6$rounds=656000$YQKwJWpJX8rTzQEr$8bP.qH0Qj/156S1nNp0fUhNFv.T6LSnqGC1yvqjN3MEH4km8jLHWHXU1AB1B5fC6TYV5ewQRjy3VaEd8V2r1N.
+d-i passwd/root-password-crypted password {{ console_password_hash | default('$6$rounds=656000$YQKwJWpJX8rTzQEr$8bP.qH0Qj/156S1nNp0fUhNFv.T6LSnqGC1yvqjN3MEH4km8jLHWHXU1AB1B5fC6TYV5ewQRjy3VaEd8V2r1N.') }}
 d-i passwd/user-fullname string Debian User  
 d-i passwd/username string debian
-d-i passwd/user-password-crypted password $6$rounds=656000$YQKwJWpJX8rTzQEr$8bP.qH0Qj/156S1nNp0fUhNFv.T6LSnqGC1yvqjN3MEH4km8jLHWHXU1AB1B5fC6TYV5ewQRjy3VaEd8V2r1N.
+d-i passwd/user-password-crypted password {{ console_password_hash | default('$6$rounds=656000$YQKwJWpJX8rTzQEr$8bP.qH0Qj/156S1nNp0fUhNFv.T6LSnqGC1yvqjN3MEH4km8jLHWHXU1AB1B5fC6TYV5ewQRjy3VaEd8V2r1N.') }}
 
 # Clock and time zone setup
 d-i clock-setup/utc boolean true

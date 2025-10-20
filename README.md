@@ -20,6 +20,17 @@ This project automates the creation of Debian VMs on a ProxmoxVE cluster using A
 2. **SSH Access**: SSH private key at `~/.ssh/id_ed25519` with access to ProxmoxVE nodes
 
 3. **ProxmoxVE API Token**: Available via keyring (`keyring get proxmoxve ansible@pve`)
+   ```bash
+   keyring set proxmoxve ansible@pve <<'END'
+   { 
+      "token-id": "ansible@pve!automation", 
+      "secret": "replace-with-your-secret", 
+      "expire": "never",
+      "endpoints": [ "tango.ank.com", "victor.ank.com", "xray.ank.com", "zulu.ank.com" ], 
+      "user": "ansible@pve" 
+   }
+   END
+   ```
 
 4. **Debian ISO**: Mounted on ProxmoxVE cluster as shared storage `drivep-public`
 
