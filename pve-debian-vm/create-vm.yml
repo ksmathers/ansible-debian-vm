@@ -5,6 +5,51 @@
     - vars.yml
   
   tasks:
+    - name: Dry Run Configuration Display
+      block:
+        - name: Generate unique VM ID (for display)
+          set_fact:
+            vm_id: "{{ 100 + (ansible_date_time.epoch | int) % 900 }}"
+          delegate_to: localhost
+          run_once: true
+
+        - name: Set VM name based on hostname or default with timestamp
+          set_fact:
+            vm_name: "{% if vm_hostname is defined and vm_hostname != 'debian-vm' %}{{ vm_hostname }}{% else %}{{ vm_base_name }}-{{ ansible_date_time.epoch }}{% endif %}"
+
+        - name: Display VM Configuration Summary
+          debug:
+            msg: |
+              ==========================================
+              VM Configuration Summary (DRY RUN)
+              ==========================================
+              VM Name: {{ vm_name }}
+              VM ID: {{ vm_id }}
+              Memory: {{ vm_memory | default(2048) }}MB ({{ ((vm_memory | default(2048) | int) / 1024) | round(1) }}GB)
+              CPU Cores: {{ vm_cores | default(2) }}
+              Disk Size: {{ vm_disk_size | default(20) }}GB
+              Network: {{ vm_network_bridge }}
+              Storage: {{ vm_storage }}
+              Hostname: {{ vm_hostname | default('debian-vm') }}
+              {% if vm_fqdn %}FQDN: {{ vm_fqdn }}{% endif %}
+              {% if vm_use_static_ip | default(false) | bool %}
+              Network Config: Static IP ({{ vm_static_ip }})
+              Gateway: 10.0.42.1, Netmask: 255.255.255.0
+              {% else %}
+              Network Config: DHCP
+              {% endif %}
+              SSH Keys: Configured for root and debian users
+              Password Auth: Disabled
+              ==========================================
+
+        - name: Skip VM creation in dry run mode
+          debug:
+            msg: "Dry run mode - VM creation tasks will be skipped"
+
+        - name: End playbook in dry run mode
+          meta: end_play
+      when: dry_run_mode | default(false) | bool
+
     - name: VM Creation Block
       block:
         - name: Generate unique VM ID
@@ -13,9 +58,9 @@
           delegate_to: localhost
           run_once: true
 
-        - name: Set VM name with timestamp
+        - name: Set VM name based on hostname or default with timestamp
           set_fact:
-            vm_name: "{{ vm_base_name }}-{{ ansible_date_time.epoch }}"
+            vm_name: "{% if vm_hostname is defined and vm_hostname != 'debian-vm' %}{{ vm_hostname }}{% else %}{{ vm_base_name }}-{{ ansible_date_time.epoch }}{% endif %}"
 
         - name: Test ProxmoxVE API connectivity
           uri:
@@ -56,9 +101,9 @@
           register: temp_dir_result
           failed_when: temp_dir_result.failed
 
-        - name: Copy preseed.cfg to temporary directory
-          copy:
-            src: preseed.cfg
+        - name: Generate dynamic preseed.cfg from template
+          template:
+            src: preseed.cfg.j2
             dest: "/tmp/vm-{{ vm_id }}/preseed.cfg"
             mode: '0644'
           register: preseed_copy_result
@@ -380,8 +425,8 @@
               Next steps:
               1. Wait for VM to boot (this may take a few minutes)
               2. Access via ProxmoxVE web interface
-              3. Login credentials: root/debian or debian/debian
-              4. SSH will be enabled on boot
+              3. SSH access: Use your SSH key for root and debian users
+              4. Password authentication is disabled for security
               
               VM Configuration:
               - Memory: {{ vm_memory }}MB
@@ -404,9 +449,10 @@
               The VM is now installing Debian automatically.
               Installation will take approximately 10-15 minutes.
               
-              Once installation is complete, you can access the VM with:
-              - Username: root / Password: debian
-              - Username: debian / Password: debian
+              Once installation is complete, you can access the VM with SSH keys:
+              - ssh root@<vm-ip>
+              - ssh debian@<vm-ip>
+              (Your SSH public key is automatically configured)
               
               Monitor progress at: https://{{ proxmox_api_host }}:8006
               ========================================
