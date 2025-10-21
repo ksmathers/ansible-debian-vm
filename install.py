@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!python
 """
 ProxmoxVE Debian VM Creation and Service Deployment Tool
 
@@ -17,10 +17,10 @@ import sys
 import subprocess
 import socket
 import re
-import crypt
 import secrets
 import string
 import tempfile
+import yaml
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Tuple
@@ -56,6 +56,9 @@ class VMManager:
         self.secure_mode = False
         self.password_secret_name = None
         self.dry_run = False
+        
+        # Service deployment
+        self.minikube_context = None
         
         # Network configuration
         self.vm_ip = ""
@@ -258,11 +261,8 @@ Network Configuration:
                     check=True
                 )
                 return result.stdout.strip()
-            except subprocess.CalledProcessError:
-                # Final fallback to Python's crypt module
-                salt_chars = string.ascii_letters + string.digits + "./"
-                salt = ''.join(secrets.choice(salt_chars) for _ in range(16))
-                return crypt.crypt(password, f"$6${salt}$")
+            except subprocess.CalledProcessError as e:
+                raise RuntimeError("Failed to generate password hash using mkpasswd or openssl", e)
 
     def extract_vm_id_from_output(self, ansible_output: str) -> Optional[int]:
         """Extract VM ID from Ansible output."""
@@ -363,8 +363,10 @@ Network Configuration:
             # Extract short hostname (everything before first dot)
             self.vm_short_name = self.hostname.split('.')[0]
         else:
-            print("No hostname specified - will use default hostname 'debian-vm'")
-            self.vm_short_name = "debian-vm"
+            # Generate unique hostname with random suffix to avoid conflicts
+            random_suffix = secrets.randbelow(9000) + 1000  # 4-digit number (1000-9999)
+            self.vm_short_name = f"debian-vm-{random_suffix}"
+            print(f"No hostname specified - will use default hostname '{self.vm_short_name}'")
             self.use_static_ip = False
             self.vm_ip = ""
 
@@ -389,7 +391,7 @@ Network Configuration:
                 else:
                     print("Network: DHCP (hostname did not resolve)")
             else:
-                print("Hostname: debian-vm (default)")
+                print(f"Hostname: {self.vm_short_name} (auto-generated)")
                 print("Network: DHCP (default)")
             print(f"Memory: {self.memory_mb}MB")
             print(f"CPU Cores: {self.cpu_cores}")
@@ -569,10 +571,103 @@ Network Configuration:
         
         if result.returncode == 0:
             if not self.dry_run:
+                # Handle post-deployment tasks
+                if self.service_name == "minikube-svc":
+                    self.setup_minikube_remote_access()
                 self.print_service_completion_message()
         else:
             print("Error: Service deployment failed")
             sys.exit(1)
+
+    def setup_minikube_remote_access(self):
+        """Set up remote access to minikube cluster by configuring local kubectl."""
+        print("\nConfiguring remote access to minikube cluster...")
+        
+        # Path to the temporary kubeconfig file
+        temp_kubeconfig = f"/tmp/minikube-{self.target_hostname.split('.')[0]}-kubeconfig"
+        
+        if not os.path.exists(temp_kubeconfig):
+            print(f"Warning: Kubeconfig file not found at {temp_kubeconfig}")
+            print("Remote access configuration skipped.")
+            return
+        
+        # Ensure ~/.kube directory exists
+        kube_dir = Path.home() / ".kube"
+        kube_dir.mkdir(exist_ok=True)
+        
+        local_config = kube_dir / "config"
+        
+        # Create a unique context name
+        context_name = f"minikube-{self.target_hostname.split('.')[0]}"
+        
+        try:
+            # Read the new kubeconfig from temp file
+            with open(temp_kubeconfig, 'r') as f:
+                new_config = yaml.safe_load(f)
+            
+            # Update cluster, context, and user names to be unique
+            cluster_name = context_name
+            user_name = context_name
+            
+            # Update names in the new config
+            if new_config.get('clusters'):
+                new_config['clusters'][0]['name'] = cluster_name
+            if new_config.get('contexts'):
+                new_config['contexts'][0]['name'] = context_name
+                new_config['contexts'][0]['context']['cluster'] = cluster_name
+                new_config['contexts'][0]['context']['user'] = user_name
+            if new_config.get('users'):
+                new_config['users'][0]['name'] = user_name
+            
+            if local_config.exists():
+                # Backup existing config
+                backup_config = kube_dir / f"config.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                subprocess.run(["cp", str(local_config), str(backup_config)], check=True)
+                
+                # Read existing config
+                with open(local_config, 'r') as f:
+                    existing_config = yaml.safe_load(f)
+                
+                # Merge configs properly
+                merged_config = {
+                    'apiVersion': 'v1',
+                    'kind': 'Config',
+                    'clusters': existing_config.get('clusters', []),
+                    'contexts': existing_config.get('contexts', []),
+                    'users': existing_config.get('users', []),
+                    'current-context': existing_config.get('current-context', context_name)
+                }
+                
+                # Remove any existing cluster/context/user with the same name
+                merged_config['clusters'] = [c for c in merged_config['clusters'] if c['name'] != cluster_name]
+                merged_config['contexts'] = [c for c in merged_config['contexts'] if c['name'] != context_name]
+                merged_config['users'] = [u for u in merged_config['users'] if u['name'] != user_name]
+                
+                # Add the new cluster/context/user
+                merged_config['clusters'].extend(new_config.get('clusters', []))
+                merged_config['contexts'].extend(new_config.get('contexts', []))
+                merged_config['users'].extend(new_config.get('users', []))
+                
+                # Write merged config
+                with open(local_config, 'w') as f:
+                    yaml.dump(merged_config, f, default_flow_style=False)
+            else:
+                # Just write the new config
+                with open(local_config, 'w') as f:
+                    yaml.dump(new_config, f, default_flow_style=False)
+            
+            print(f"✓ Kubeconfig updated successfully!")
+            print(f"✓ Context created: {context_name}")
+            
+            # Clean up temp file
+            os.remove(temp_kubeconfig)
+            
+            self.minikube_context = context_name
+            
+        except subprocess.CalledProcessError as e:
+            print(f"Error setting up remote access: {e}")
+        except Exception as e:
+            print(f"Unexpected error: {e}")
 
     def print_completion_message(self):
         """Print completion message with next steps."""
@@ -601,16 +696,27 @@ Network Configuration:
         
         if self.service_name == "minikube-svc":
             print("\nMinikube has been installed successfully!")
-            print("\nNext steps:")
-            print(f"1. SSH to the VM: ssh debian@{self.target_hostname}")
-            print("2. Start minikube: minikube start --driver=docker")
-            print("3. Check status: minikube status")
-            print("4. Use kubectl: kubectl get nodes")
-            print("\nNote: You may need to log out and back in for docker group membership to take effect.")
-            print("\nUseful commands:")
-            print("  minikube dashboard    # Open Kubernetes dashboard")
-            print("  kubectl cluster-info  # Show cluster information")
-            print("  minikube stop         # Stop the cluster")
+            print("Minikube is configured to start automatically on boot.")
+            
+            if self.minikube_context:
+                print(f"\n🎉 Remote access configured!")
+                print(f"✓ Kubectl context: {self.minikube_context}")
+                print(f"\nTo use the remote cluster:")
+                print(f"  kubectl config use-context {self.minikube_context}")
+                print(f"  kubectl get nodes")
+            else:
+                print(f"\nFor remote access:")
+                print(f"1. SSH to the VM: ssh debian@{self.target_hostname}")
+            
+            print(f"\nCluster management:")
+            print(f"  kubectl config get-contexts        # List available contexts")
+            print(f"  kubectl cluster-info               # Show cluster information") 
+            print(f"  ssh debian@{self.target_hostname}  # SSH access")
+            print(f"")
+            print(f"Service management on VM:")
+            print(f"  sudo systemctl status minikube     # Check service status")
+            print(f"  sudo systemctl stop minikube       # Stop minikube")
+            print(f"  sudo systemctl start minikube      # Start minikube")
         else:
             print(f"\nService '{self.service_name}' has been deployed to {self.target_hostname}")
         

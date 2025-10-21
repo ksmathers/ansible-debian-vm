@@ -9,10 +9,19 @@ if [ -z "$HOSTNAME" ]; then
     HOSTNAME="debian-vm"
 fi
 
-echo "Setting up Avahi daemon for hostname: $HOSTNAME"
+echo "Setting up Avahi daemon configuration for hostname: $HOSTNAME"
 
-# Enable avahi-daemon service
-systemctl enable avahi-daemon
+# Create systemd override to delay Avahi startup until network is fully ready
+mkdir -p /etc/systemd/system/avahi-daemon.service.d
+cat > /etc/systemd/system/avahi-daemon.service.d/network-delay.conf << EOF
+[Unit]
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Add a small delay to ensure both IPv4 and IPv6 are fully configured
+ExecStartPre=/bin/sleep 3
+EOF
 
 # Create avahi-daemon configuration
 cat > /etc/avahi/avahi-daemon.conf << EOF
@@ -25,6 +34,9 @@ allow-interfaces=ens18
 check-response-ttl=no
 use-iff-running=no
 enable-dbus=yes
+# Prevent hostname conflicts by being more tolerant of network changes
+disallow-other-stacks=no
+allow-point-to-point=no
 
 [publish]
 disable-publishing=no
@@ -48,3 +60,4 @@ rlimit-nproc=3
 EOF
 
 echo "Avahi daemon configuration completed for $HOSTNAME.local"
+echo "Service will be enabled automatically on first boot"

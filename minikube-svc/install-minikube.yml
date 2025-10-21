@@ -4,7 +4,6 @@
   become: yes
   vars:
     minikube_version: "latest"
-    kubectl_version: "stable"
   
   tasks:
     - name: Update apt cache
@@ -20,24 +19,135 @@
           - curl
           - gnupg
           - lsb-release
+          - apparmor-utils
+          - conntrack
+          - containerd
+          - iptables
           - docker.io
         state: present
-    
+        update_cache: yes
+
+    - name: Configure sysctl for minikube none driver
+      sysctl:
+        name: fs.protected_regular
+        value: '0'
+        state: present
+        reload: yes
+
     - name: Add user to docker group
       user:
         name: debian
         groups: docker
         append: yes
-    
+
+    - name: Create containerd config directory
+      file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Configure containerd
+      copy:
+        dest: /etc/containerd/config.toml
+        content: |
+          version = 2
+          
+          [plugins."io.containerd.grpc.v1.cri"]
+            [plugins."io.containerd.grpc.v1.cri".containerd]
+              [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+                [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+                  runtime_type = "io.containerd.runc.v2"
+                  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+                    SystemdCgroup = true
+        mode: '0644'
+        owner: root
+        group: root
+      notify: restart containerd
+
+    - name: Enable and start containerd
+      systemd:
+        name: containerd
+        enabled: yes
+        state: started
+
+    - name: Download crictl
+      get_url:
+        url: "https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.29.0/crictl-v1.29.0-linux-amd64.tar.gz"
+        dest: /tmp/crictl.tar.gz
+        mode: '0644'
+
+    - name: Extract crictl
+      unarchive:
+        src: /tmp/crictl.tar.gz
+        dest: /usr/local/bin
+        remote_src: yes
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Configure crictl
+      copy:
+        dest: /etc/crictl.yaml
+        content: |
+          runtime-endpoint: unix:///var/run/containerd/containerd.sock
+          image-endpoint: unix:///var/run/containerd/containerd.sock
+          timeout: 2
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: Create minikube directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - /var/lib/minikube
+        - /var/lib/minikube/certs
+
+    - name: Download CNI plugins
+      get_url:
+        url: "https://github.com/containernetworking/plugins/releases/download/v1.4.0/cni-plugins-linux-amd64-v1.4.0.tgz"
+        dest: /tmp/cni-plugins.tgz
+        mode: '0644'
+
+    - name: Create CNI bin directory
+      file:
+        path: /opt/cni/bin
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Extract CNI plugins
+      unarchive:
+        src: /tmp/cni-plugins.tgz
+        dest: /opt/cni/bin
+        remote_src: yes
+        mode: '0755'
+        owner: root
+        group: root
+
     - name: Start and enable Docker service
       systemd:
         name: docker
         state: started
         enabled: yes
+
+    - name: Get latest stable kubectl version
+      uri:
+        url: https://dl.k8s.io/release/stable.txt
+        method: GET
+        return_content: yes
+      register: kubectl_version_response
     
     - name: Download kubectl
       get_url:
-        url: "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl"
+        url: "https://dl.k8s.io/release/{{ kubectl_version_response.content.strip() }}/bin/linux/amd64/kubectl"
         dest: /usr/local/bin/kubectl
         mode: '0755'
         owner: root
@@ -59,6 +169,12 @@
         group: debian
         mode: '0755'
     
+    - name: Create bash completion directory
+      file:
+        path: /etc/bash_completion.d
+        state: directory
+        mode: '0755'
+    
     - name: Set up bash completion for kubectl
       shell: |
         kubectl completion bash > /etc/bash_completion.d/kubectl
@@ -71,15 +187,115 @@
       args:
         creates: /etc/bash_completion.d/minikube
     
+    - name: Create minikube systemd service
+      copy:
+        dest: /etc/systemd/system/minikube.service
+        content: |
+          [Unit]
+          Description=Minikube Kubernetes Cluster
+          After=containerd.service network.target
+          
+          [Service]
+          Type=oneshot
+          User=root
+          Group=root
+          Environment=HOME=/root
+          Environment=MINIKUBE_IN_STYLE=false
+          ExecStartPre=/bin/bash -c 'until systemctl is-active containerd; do sleep 5; done'
+          ExecStart=/usr/local/bin/minikube start --driver=none --apiserver-port=8443 --container-runtime=containerd --apiserver-ips={{ ansible_default_ipv4.address }} --apiserver-names={{ ansible_fqdn }},{{ ansible_hostname }}
+          ExecStop=/usr/local/bin/minikube stop
+          TimeoutStartSec=1200
+          TimeoutStopSec=300
+          RemainAfterExit=yes
+          Restart=no
+          
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+        owner: root
+        group: root
+      tags: systemd
+    
+    - name: Enable and start minikube service
+      systemd:
+        name: minikube
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      tags: systemd
+
+    - name: Wait for minikube to be ready
+      shell: |
+        timeout 120 bash -c 'until kubectl get nodes 2>/dev/null; do sleep 5; done'
+      become_user: root
+      environment:
+        HOME: /root
+      tags: remote_access
+
+    - name: Get minikube kubeconfig with external IP and embedded certificates
+      shell: |
+        kubectl config view --raw --flatten
+      become_user: root
+      environment:
+        HOME: /root
+        KUBECONFIG: /root/.kube/config
+      register: minikube_kubeconfig
+      tags: remote_access
+
+    - name: Create kubeconfig with external access
+      copy:
+        content: "{{ minikube_kubeconfig.stdout | regex_replace('https://[^:]+:', 'https://' + ansible_default_ipv4.address + ':') }}"
+        dest: /tmp/minikube-{{ ansible_hostname }}-kubeconfig
+        mode: '0600'
+      delegate_to: localhost
+      become: no
+      tags: remote_access
+
+    - name: Display remote access information
+      debug:
+        msg: |
+          Minikube remote access configured!
+          
+          Kubeconfig saved to: /tmp/minikube-{{ ansible_hostname }}-kubeconfig
+          
+          To add this cluster to your local kubectl config:
+          KUBECONFIG=~/.kube/config:/tmp/minikube-{{ ansible_hostname }}-kubeconfig kubectl config view --flatten > ~/.kube/config.new && mv ~/.kube/config.new ~/.kube/config
+          
+          Then use this context:
+          kubectl config use-context minikube
+          
+          API Server: https://{{ ansible_default_ipv4.address }}:8443
+      tags: remote_access
+    
     - name: Display completion message
       debug:
         msg: |
           Minikube installation completed successfully!
           
-          To start using minikube:
-          1. SSH to the VM: ssh debian@{{ ansible_host }}
-          2. Start minikube: minikube start --driver=docker
-          3. Check status: minikube status
-          4. Use kubectl: kubectl get nodes
+          Minikube has been configured with:
+          - Driver: none (runs directly on VM)
+          - Container Runtime: containerd
+          - Auto-start on boot enabled
+          - API Server accessible at: https://{{ ansible_default_ipv4.address }}:8443
           
-          Note: You may need to log out and back in for docker group membership to take effect.
+          To check minikube status:
+          1. SSH to the VM: ssh debian@{{ ansible_host }}
+          2. Check status: sudo minikube status
+          3. Use kubectl: sudo kubectl get nodes
+          4. Check service status: sudo systemctl status minikube
+          
+          Manual control:
+          - Start: sudo systemctl start minikube
+          - Stop: sudo systemctl stop minikube  
+          - Disable auto-start: sudo systemctl disable minikube
+          
+          Important notes:
+          - Commands must be run as root (sudo) since the none driver requires root privileges
+          - Minikube may take 2-3 minutes to fully start up on first boot
+          - The systemd service is configured with a 20-minute timeout to handle initial setup
+
+  handlers:
+    - name: restart containerd
+      systemd:
+        name: containerd
+        state: restarted
