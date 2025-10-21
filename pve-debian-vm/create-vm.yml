@@ -7,9 +7,9 @@
   tasks:
     - name: Dry Run Configuration Display
       block:
-        - name: Generate unique VM ID (for display)
+        - name: Set VM ID for display (user-specified or auto-generated)
           set_fact:
-            vm_id: "{{ 100 + (ansible_date_time.epoch | int) % 900 }}"
+            vm_id: "{{ user_vm_id | default(100 + (ansible_date_time.epoch | int) % 900) }}"
           delegate_to: localhost
           run_once: true
 
@@ -52,9 +52,9 @@
 
     - name: VM Creation Block
       block:
-        - name: Generate unique VM ID
+        - name: Set VM ID (user-specified or auto-generated)
           set_fact:
-            vm_id: "{{ 100 + (ansible_date_time.epoch | int) % 900 }}"
+            vm_id: "{{ user_vm_id | default(100 + (ansible_date_time.epoch | int) % 900) }}"
           delegate_to: localhost
           run_once: true
 
@@ -81,17 +81,19 @@
               Token ID: {{ proxmox_api_token_id }}
               ProxmoxVE Version: {{ api_test.json.data.version }}
 
-        - name: Generate random component for VM ID uniqueness
+        - name: Generate random component for VM ID uniqueness (auto-generated IDs only)
           set_fact:
             random_component: "{{ 999999 | random }}"
+          when: user_vm_id is not defined
 
-        - name: Use more unique VM ID to avoid conflicts
+        - name: Use more unique VM ID to avoid conflicts (auto-generated IDs only)
           set_fact:
             vm_id: "{{ 100 + (random_component | int) % 800 }}"
+          when: user_vm_id is not defined
 
         - name: Display selected VM ID
           debug:
-            msg: "Selected VM ID: {{ vm_id }}"
+            msg: "Selected VM ID: {{ vm_id }} {{ '(user-specified)' if user_vm_id is defined else '(auto-generated)' }}"
 
         - name: Create temporary directory for ISO
           file:

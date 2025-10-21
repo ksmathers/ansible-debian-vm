@@ -12,6 +12,15 @@ fi
 
 echo "Configuring SSH with key-based authentication"
 
+# Add debian user to sudo group for service management
+usermod -aG sudo debian
+echo "Added debian user to sudo group"
+
+# Configure passwordless sudo for debian user (needed for automated service deployment)
+echo "debian ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/debian
+chmod 440 /etc/sudoers.d/debian
+echo "Configured passwordless sudo for debian user"
+
 # Enable SSH service
 systemctl enable ssh
 

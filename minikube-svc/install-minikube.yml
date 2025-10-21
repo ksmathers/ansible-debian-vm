@@ -1,0 +1,85 @@
+---
+- name: Install Minikube on Debian VM
+  hosts: target_vm
+  become: yes
+  vars:
+    minikube_version: "latest"
+    kubectl_version: "stable"
+  
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      
+    - name: Install required packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - docker.io
+        state: present
+    
+    - name: Add user to docker group
+      user:
+        name: debian
+        groups: docker
+        append: yes
+    
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+    
+    - name: Download kubectl
+      get_url:
+        url: "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl"
+        dest: /usr/local/bin/kubectl
+        mode: '0755'
+        owner: root
+        group: root
+    
+    - name: Download minikube
+      get_url:
+        url: "https://storage.googleapis.com/minikube/releases/{{ minikube_version }}/minikube-linux-amd64"
+        dest: /usr/local/bin/minikube
+        mode: '0755'
+        owner: root
+        group: root
+    
+    - name: Create minikube user directory
+      file:
+        path: /home/debian/.minikube
+        state: directory
+        owner: debian
+        group: debian
+        mode: '0755'
+    
+    - name: Set up bash completion for kubectl
+      shell: |
+        kubectl completion bash > /etc/bash_completion.d/kubectl
+      args:
+        creates: /etc/bash_completion.d/kubectl
+    
+    - name: Set up bash completion for minikube  
+      shell: |
+        minikube completion bash > /etc/bash_completion.d/minikube
+      args:
+        creates: /etc/bash_completion.d/minikube
+    
+    - name: Display completion message
+      debug:
+        msg: |
+          Minikube installation completed successfully!
+          
+          To start using minikube:
+          1. SSH to the VM: ssh debian@{{ ansible_host }}
+          2. Start minikube: minikube start --driver=docker
+          3. Check status: minikube status
+          4. Use kubectl: kubectl get nodes
+          
+          Note: You may need to log out and back in for docker group membership to take effect.
