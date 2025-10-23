@@ -1,4 +1,3 @@
----
 - name: Install Minikube on Debian VM
   hosts: target_vm
   become: yes
