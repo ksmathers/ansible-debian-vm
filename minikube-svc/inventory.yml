@@ -1,2 +1,0 @@
-[target_vm]
-jinx.ank.com ansible_user=debian ansible_ssh_private_key_file=~/.ssh/id_ed25519

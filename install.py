@@ -143,6 +143,7 @@ Network Configuration:
         
         # Determine operation mode based on directory naming convention
         if Path(args.package_name).is_dir():
+            args.package_name = args.package_name.rstrip('/')
             if args.package_name.endswith('-svc'):
                 # Service Deployment mode: directory ending in '-svc'
                 self.operation_mode = "service-deployment" 
