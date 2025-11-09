@@ -74,10 +74,15 @@ ansible-debian-vm/
 │       ├── setup-ssh.sh    # SSH and sudo configuration
 │       ├── setup-avahi.sh  # mDNS/Avahi setup
 │       └── setup-static-network.sh  # Static network configuration
-└── minikube-svc/           # Service deployment example
+├── minikube-svc/           # Minikube Kubernetes cluster service
+│   ├── ansible.cfg         # Service-specific Ansible config
+│   ├── install-minikube.yml # Minikube installation playbook
+│   └── inventory.yml.j2    # Dynamic inventory template
+└── metallb-svc/            # MetalLB LoadBalancer service  
     ├── ansible.cfg         # Service-specific Ansible config
-    ├── install-minikube.yml # Minikube installation playbook
-    └── inventory.yml.j2    # Dynamic inventory template
+    ├── install-metallb.yml # MetalLB installation playbook
+    ├── inventory.yml.j2    # Dynamic inventory template
+    └── README.md           # Detailed MetalLB documentation
 ```
 
 ## Usage
@@ -140,7 +145,55 @@ Deploy services to existing VMs using directories ending in `-svc`:
 
 # Preview service deployment
 ./install.py --dry-run minikube-svc jinx.ank.com
+
+# Deploy MetalLB LoadBalancer to existing minikube cluster
+./install.py metallb-svc jinx.ank.com
+
+# Deploy MetalLB with custom IP range and test service
+./install.py --metallb-ip-range=192.168.1.200-192.168.1.210 --test-service metallb-svc jinx.ank.com
 ```
+
+## Available Services
+
+### minikube-svc
+Deploys a complete minikube Kubernetes cluster configured with `--driver=none` for maximum performance and NodePort service exposure.
+
+**Features:**
+- Container runtime: containerd
+- Networking: CNI plugins
+- Auto-start: systemd service 
+- Remote access: kubectl configuration
+- Service exposure: NodePort
+
+**Usage:**
+```bash
+./install.py minikube-svc <hostname>
+```
+
+### metallb-svc  
+Adds MetalLB LoadBalancer support to existing minikube clusters, enabling services to receive external IP addresses directly accessible from the host network.
+
+**Prerequisites:** Existing minikube cluster (deployed via minikube-svc)
+
+**Features:**
+- LoadBalancer IP assignment
+- Layer 2 (ARP) networking
+- Automatic IP range calculation
+- Custom IP range support
+- Optional test service deployment
+
+**Usage:**
+```bash
+# Basic installation with auto-calculated IP range
+./install.py metallb-svc <hostname>
+
+# Custom IP range
+./install.py --metallb-ip-range=<start-ip>-<end-ip> metallb-svc <hostname>
+
+# Include test service
+./install.py --test-service metallb-svc <hostname>
+```
+
 ## Available Nodes
 
 - `tango.ank.com`

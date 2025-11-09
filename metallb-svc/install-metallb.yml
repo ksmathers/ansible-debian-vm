@@ -1,0 +1,313 @@
+- name: Install MetalLB on existing Minikube cluster
+  hosts: target_vm
+  become: yes
+  vars:
+    # MetalLB configuration defaults
+    metallb_ip_range_start: "{{ ansible_default_ipv4.address | regex_replace('\\.[0-9]+$', '') }}.200"
+    metallb_ip_range_end: "{{ ansible_default_ipv4.address | regex_replace('\\.[0-9]+$', '') }}.254" 
+    metallb_ip_range: "{{ metallb_ip_range_start }}-{{ metallb_ip_range_end }}"
+    metallb_namespace: "metallb-system"
+    metallb_pool_name: "default-pool"
+    
+    # Allow override via extra vars
+    # Example: ansible-playbook install-metallb.yml -e "metallb_ip_range=192.168.1.200-192.168.1.210"
+  
+  tasks:
+    # =============================================================================
+    # PRE-FLIGHT CHECKS
+    # =============================================================================
+    - name: "🔍 PREFLIGHT → Verify minikube is running"
+      shell: |
+        minikube status --format='{{ "{{" }}.Host{{ "}}" }}'
+      become_user: root
+      environment:
+        HOME: /root
+      register: minikube_status
+      failed_when: "'Running' not in minikube_status.stdout"
+      
+    - name: "🔍 PREFLIGHT → Verify kubectl connectivity"
+      shell: |
+        kubectl get nodes --no-headers
+      become_user: root
+      environment:
+        HOME: /root
+      register: kubectl_nodes
+      failed_when: kubectl_nodes.rc != 0 or 'Ready' not in kubectl_nodes.stdout
+      
+    - name: "🔍 PREFLIGHT → Check if MetalLB is already installed"
+      shell: |
+        kubectl get namespace {{ metallb_namespace }} 2>/dev/null || echo "not-found"
+      become_user: root
+      environment:
+        HOME: /root
+      register: metallb_check
+      changed_when: false
+
+    # =============================================================================
+    # NETWORK CONFIGURATION
+    # =============================================================================
+    - name: "🌐 NETWORK → Enable IP forwarding for LoadBalancer services"
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        state: present
+        reload: yes
+        
+    - name: "🌐 NETWORK → Verify current network configuration"
+      debug:
+        msg: |
+          📡 Network Configuration:
+          • Host IP: {{ ansible_default_ipv4.address }}
+          • Network: {{ ansible_default_ipv4.network }}/{{ ansible_default_ipv4.netmask }}
+          • MetalLB IP Range: {{ metallb_ip_range }}
+          • Gateway: {{ ansible_default_ipv4.gateway | default('Not detected') }}
+
+    # =============================================================================
+    # METALLB INSTALLATION
+    # =============================================================================
+    - name: "🚀 METALLB → Enable MetalLB addon in minikube"
+      shell: |
+        minikube addons enable metallb
+      become_user: root
+      environment:
+        HOME: /root
+      register: metallb_addon
+      when: "'not-found' in metallb_check.stdout"
+      
+    - name: "⏳ METALLB → Wait for MetalLB namespace to be created"
+      shell: |
+        timeout 60 bash -c 'until kubectl get namespace {{ metallb_namespace }} 2>/dev/null; do sleep 2; done'
+      become_user: root
+      environment:
+        HOME: /root
+      when: "'not-found' in metallb_check.stdout"
+      
+    - name: "⏳ METALLB → Wait for MetalLB controller pods to be ready"
+      shell: |
+        timeout 120 bash -c 'until kubectl get pods -n {{ metallb_namespace }} -o jsonpath="{.items[*].status.phase}" | grep -v Running | wc -l | grep -q "^0$" 2>/dev/null; do sleep 5; done'
+      become_user: root
+      environment:
+        HOME: /root
+      when: "'not-found' in metallb_check.stdout"
+      retries: 2
+      delay: 10
+
+    # =============================================================================
+    # METALLB CONFIGURATION
+    # =============================================================================
+    - name: "📝 METALLB → Check for existing MetalLB configuration"
+      shell: |
+        kubectl get configmap -n {{ metallb_namespace }} config 2>/dev/null || echo "not-found"
+      become_user: root
+      environment:
+        HOME: /root
+      register: existing_pool
+      changed_when: false
+
+    - name: "🧹 METALLB → Remove existing broken configuration if present"
+      shell: |
+        kubectl delete configmap -n {{ metallb_namespace }} config 2>/dev/null || true
+      become_user: root
+      environment:
+        HOME: /root
+      when: "'not-found' not in existing_pool.stdout"
+      register: config_deleted
+
+    - name: "📝 METALLB → Create MetalLB ConfigMap (legacy v0.9.x format)"
+      copy:
+        dest: /tmp/metallb-config.yaml
+        content: |
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            namespace: {{ metallb_namespace }}
+            name: config
+          data:
+            config: |
+              address-pools:
+              - name: {{ metallb_pool_name }}
+                protocol: layer2
+                addresses:
+                - {{ metallb_ip_range }}
+        mode: '0644'
+        owner: root
+        group: root
+      
+    - name: "🚀 METALLB → Apply MetalLB configuration"
+      shell: |
+        kubectl apply -f /tmp/metallb-config.yaml
+      become_user: root
+      environment:
+        HOME: /root
+      register: metallb_config_applied
+      
+    - name: "🧹 METALLB → Clean up configuration file"
+      file:
+        path: /tmp/metallb-config.yaml
+        state: absent
+
+    # =============================================================================
+    # VERIFICATION AND TESTING
+    # =============================================================================
+    - name: "✅ VERIFY → Check MetalLB pods status"
+      shell: |
+        kubectl get pods -n {{ metallb_namespace }} -o wide
+      become_user: root
+      environment:
+        HOME: /root
+      register: metallb_pods
+      
+    - name: "✅ VERIFY → Check MetalLB configuration"
+      shell: |
+        kubectl get configmap -n {{ metallb_namespace }} config -o yaml
+      become_user: root
+      environment:
+        HOME: /root
+      register: metallb_resources
+      
+    - name: "📊 VERIFY → Display MetalLB status"
+      debug:
+        msg: |
+          🎯 MetalLB Installation Status:
+          {{ metallb_pods.stdout | indent(2) }}
+          
+          📡 MetalLB Configuration:
+          {{ metallb_resources.stdout | indent(2) }}
+
+    # =============================================================================
+    # TEST SERVICE DEPLOYMENT (OPTIONAL)
+    # =============================================================================
+    - name: "🧪 TEST → Create test nginx deployment and LoadBalancer service"
+      copy:
+        dest: /tmp/metallb-test.yaml
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: metallb-test-nginx
+            labels:
+              app: metallb-test-nginx
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: metallb-test-nginx
+            template:
+              metadata:
+                labels:
+                  app: metallb-test-nginx
+              spec:
+                containers:
+                - name: nginx
+                  image: nginx:alpine
+                  ports:
+                  - containerPort: 80
+                  resources:
+                    limits:
+                      memory: "128Mi"
+                      cpu: "100m"
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: metallb-test-nginx
+          spec:
+            selector:
+              app: metallb-test-nginx
+            ports:
+            - protocol: TCP
+              port: 80
+              targetPort: 80
+            type: LoadBalancer
+        mode: '0644'
+      when: test_service is defined and test_service | bool
+      
+    - name: "🧪 TEST → Deploy test nginx service"
+      shell: |
+        kubectl apply -f /tmp/metallb-test.yaml
+      become_user: root
+      environment:
+        HOME: /root
+      when: test_service is defined and test_service | bool
+      
+    - name: "⏳ TEST → Wait for LoadBalancer IP assignment"
+      shell: |
+        timeout 60 bash -c 'until kubectl get svc metallb-test-nginx -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; do sleep 2; done'
+      become_user: root
+      environment:
+        HOME: /root
+      register: lb_ip
+      when: test_service is defined and test_service | bool
+      
+    - name: "🎯 TEST → Display LoadBalancer service info"
+      shell: |
+        kubectl get svc metallb-test-nginx -o wide
+      become_user: root
+      environment:
+        HOME: /root
+      register: test_svc_info
+      when: test_service is defined and test_service | bool
+      
+    - name: "📊 TEST → Show test service details"
+      debug:
+        msg: |
+          🧪 Test LoadBalancer Service:
+          {{ test_svc_info.stdout | indent(2) }}
+          
+          🌐 Test the service:
+          curl http://{{ lb_ip.stdout }}
+          
+          🧹 Clean up test service:
+          kubectl delete -f /tmp/metallb-test.yaml
+      when: test_service is defined and test_service | bool
+      
+    - name: "🧹 TEST → Clean up test configuration file"
+      file:
+        path: /tmp/metallb-test.yaml
+        state: absent
+      when: test_service is defined and test_service | bool
+
+    # =============================================================================
+    # COMPLETION STATUS
+    # =============================================================================
+    - name: "🏁 COMPLETION → Display installation summary"
+      debug:
+        msg: |
+          ✅ MetalLB installation completed successfully!
+          
+          📋 Configuration Summary:
+          • MetalLB Namespace: {{ metallb_namespace }}
+          • IP Address Pool: {{ metallb_ip_range }}
+          • Pool Name: {{ metallb_pool_name }}
+          • Protocol: Layer 2 (ARP-based)
+          • Host Network: {{ ansible_default_ipv4.address }}/{{ ansible_default_ipv4.netmask }}
+          
+          🚀 Usage Instructions:
+          1. Create a deployment:
+             kubectl create deployment my-app --image=nginx
+          
+          2. Expose as LoadBalancer:
+             kubectl expose deployment my-app --type=LoadBalancer --port=80
+          
+          3. Check assigned IP:
+             kubectl get svc my-app
+          
+          🔧 Management Commands:
+          • List LoadBalancer services: kubectl get svc --field-selector spec.type=LoadBalancer
+          • Check MetalLB logs: kubectl logs -n {{ metallb_namespace }} -l app=metallb
+          • View IP pools: kubectl get ipaddresspool -n {{ metallb_namespace }}
+          • Monitor L2 advertisements: kubectl get l2advertisement -n {{ metallb_namespace }}
+          
+          📡 Network Notes:
+          • LoadBalancer IPs are directly accessible from the host network
+          • IPs are assigned from range: {{ metallb_ip_range }}
+          • Ensure this range doesn't conflict with DHCP
+          • Services are reachable without port forwarding
+          
+          🧪 Quick Test:
+          ansible-playbook install-metallb.yml -e "test_service=true"
+          
+          ⚠️  Important:
+          • MetalLB uses Layer 2 mode (ARP) for IP advertisement
+          • Assigned IPs must be on the same subnet as the host
+          • Configure firewall rules if needed for external access

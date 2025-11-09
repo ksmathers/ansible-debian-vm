@@ -60,6 +60,10 @@ class VMManager:
         # Service deployment
         self.minikube_context = None
         
+        # MetalLB-specific options
+        self.metallb_ip_range = None
+        self.test_service = False
+        
         # Network configuration
         self.vm_ip = ""
         self.use_static_ip = False
@@ -129,6 +133,17 @@ Network Configuration:
             help="Show what would be done without executing"
         )
         
+        # MetalLB-specific arguments
+        parser.add_argument(
+            "--metallb-ip-range",
+            help="IP range for MetalLB LoadBalancer services (e.g., 192.168.1.200-192.168.1.210). REQUIRED when using metallb-svc service"
+        )
+        parser.add_argument(
+            "--test-service",
+            action="store_true", 
+            help="Deploy a test nginx LoadBalancer service to verify MetalLB functionality. Used with metallb-svc service"
+        )
+        
         # Positional arguments
         parser.add_argument(
             "package_name",
@@ -179,6 +194,10 @@ Network Configuration:
         self.dry_run = args.dry_run
         self.secure_mode = args.secure
         self.cpu_cores = args.cpus
+        
+        # Process MetalLB-specific arguments
+        self.metallb_ip_range = getattr(args, 'metallb_ip_range', None)
+        self.test_service = getattr(args, 'test_service', False)
         
         # Process VM ID with validation
         if args.vmid is not None:
@@ -538,7 +557,8 @@ Network Configuration:
         
         # Determine playbook file based on service
         playbook_map = {
-            "minikube-svc": "install-minikube.yml"
+            "minikube-svc": "install-minikube.yml",
+            "metallb-svc": "install-metallb.yml"
         }
         
         playbook_file = playbook_map.get(self.service_name)
@@ -558,6 +578,17 @@ Network Configuration:
             "-i", "inventory.yml",
             "-v"
         ]
+        
+        # Add service-specific extra variables
+        if self.service_name == "metallb-svc":
+            # MetalLB requires an IP range to be specified
+            if not self.metallb_ip_range:
+                print("Error: MetalLB service requires --metallb-ip-range to be specified")
+                print("Example: --metallb-ip-range=10.0.42.200-10.0.42.254")
+                sys.exit(1)
+            ansible_cmd.extend(["-e", f"metallb_ip_range={self.metallb_ip_range}"])
+            if self.test_service:
+                ansible_cmd.extend(["-e", "test_service=true"])
         
         if self.dry_run:
             print(f"\n[DRY RUN] Would deploy {self.service_name} to {self.target_hostname}")
@@ -718,6 +749,25 @@ Network Configuration:
             print(f"  sudo systemctl status minikube     # Check service status")
             print(f"  sudo systemctl stop minikube       # Stop minikube")
             print(f"  sudo systemctl start minikube      # Start minikube")
+        elif self.service_name == "metallb-svc":
+            print("\nMetalLB has been installed on your existing minikube cluster!")
+            print("LoadBalancer services can now receive external IP addresses.")
+            
+            print(f"\n🎯 Usage Examples:")
+            print(f"  # Create a deployment")
+            print(f"  kubectl create deployment nginx --image=nginx")
+            print(f"  # Expose as LoadBalancer")
+            print(f"  kubectl expose deployment nginx --type=LoadBalancer --port=80")
+            print(f"  # Check assigned IP")
+            print(f"  kubectl get svc nginx")
+            
+            print(f"\n🔧 MetalLB Management:")
+            print(f"  kubectl get ipaddresspool -n metallb-system    # View IP pools")
+            print(f"  kubectl get svc --field-selector spec.type=LoadBalancer  # List LB services")
+            print(f"  kubectl logs -n metallb-system -l app=metallb  # Check MetalLB logs")
+            
+            print(f"\n🧪 Quick Test:")
+            print(f"  ansible-playbook install-metallb.yml -e \"test_service=true\"")
         else:
             print(f"\nService '{self.service_name}' has been deployed to {self.target_hostname}")
         
