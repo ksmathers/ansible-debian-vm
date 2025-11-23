@@ -147,6 +147,158 @@
         state: absent
 
     # =============================================================================
+    # AVAHI ADVERTISER INSTALLATION
+    # =============================================================================
+    - name: "� PYTHON → Install Python 3 and dependencies"
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-kubernetes
+        state: present
+        update_cache: yes
+      register: python_install
+      
+    - name: "✅ PYTHON → Verify Python 3 installation"
+      shell: |
+        python3 --version
+        pip3 --version
+      register: python_version
+      
+    - name: "📊 PYTHON → Display Python installation details"
+      debug:
+        msg: |
+          🐍 Python Environment:
+          {{ python_version.stdout | indent(2) }}
+    
+    - name: "�📁 AVAHI → Create temporary directory for avahi-advertiser"
+      file:
+        path: /tmp/avahi-advertiser
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+      register: avahi_dir_created
+      
+    - name: "❌ AVAHI ERROR → Failed to create temporary directory"
+      debug:
+        msg: |
+          🚨 ERROR: Failed to create temporary directory /tmp/avahi-advertiser
+          
+          Details: {{ avahi_dir_created }}
+      when: avahi_dir_created.failed | default(false)
+      
+    - name: "📦 AVAHI → Copy avahi-advertiser directory to target"
+      copy:
+        src: avahi-advertiser/
+        dest: /tmp/avahi-advertiser/
+        mode: preserve
+        owner: root
+        group: root
+      register: avahi_copy
+      ignore_errors: yes
+      
+    - name: "❌ AVAHI ERROR → Failed to copy avahi-advertiser files"
+      debug:
+        msg: |
+          🚨 ERROR: Failed to copy avahi-advertiser directory to target node
+          
+          Possible causes:
+          • Source directory 'avahi-advertiser/' not found in playbook directory
+          • Permission issues on source or destination
+          • Network connectivity problems
+          • Insufficient disk space on target
+          
+          Error details:
+          {{ avahi_copy.msg | default('No error message available') }}
+          
+          ⚠️  Skipping avahi-advertiser installation due to copy failure
+      when: avahi_copy.failed | default(false)
+
+    - name: "🚀 AVAHI → Deploy avahi-advertiser service"
+      shell: |
+        cd /tmp/avahi-advertiser
+        bash install.sh
+      become_user: root
+      register: avahi_install
+      ignore_errors: yes
+      when: not (avahi_copy.failed | default(false))
+      
+    - name: "❌ AVAHI ERROR → Failed to install avahi-advertiser"
+      debug:
+        msg: |
+          🚨 ERROR: Failed to install avahi-advertiser service
+          
+          Possible causes:
+          • install.sh script not found or not executable
+          • Missing system dependencies (python3, avahi-daemon, etc.)
+          • systemd service file issues
+          • Permission problems
+          • Python package installation failures
+          
+          Installation output:
+          {{ avahi_install.stdout | default('No stdout') | indent(2) }}
+          
+          Error output:
+          {{ avahi_install.stderr | default('No stderr') | indent(2) }}
+          
+          Return code: {{ avahi_install.rc | default('N/A') }}
+          
+          ⚠️  You may need to manually troubleshoot the installation
+      when: 
+        - not (avahi_copy.failed | default(false))
+        - avahi_install.failed | default(false)
+      
+    - name: "✅ AVAHI → Verify avahi-k8s-advertiser service status"
+      shell: |
+        systemctl status avahi-k8s-advertiser --no-pager
+      become_user: root
+      register: avahi_status
+      failed_when: false
+      when: 
+        - not (avahi_copy.failed | default(false))
+        - not (avahi_install.failed | default(false))
+      
+    - name: "⚠️  AVAHI WARNING → Service not running properly"
+      debug:
+        msg: |
+          ⚠️  WARNING: avahi-k8s-advertiser service may not be running properly
+          
+          Service status output:
+          {{ avahi_status.stdout | default('Unable to get status') | indent(2) }}
+          
+          Troubleshooting steps:
+          • Check service logs: journalctl -u avahi-k8s-advertiser -n 50
+          • Verify kubernetes config: kubectl config view
+          • Check avahi daemon: systemctl status avahi-daemon
+          • Review service file: /etc/systemd/system/avahi-k8s-advertiser.service
+      when: 
+        - not (avahi_copy.failed | default(false))
+        - not (avahi_install.failed | default(false))
+        - avahi_status.rc != 0
+      
+    - name: "📊 AVAHI → Display avahi-advertiser installation status"
+      debug:
+        msg: |
+          ✅ Avahi Advertiser Installation Successful
+          
+          📡 Installation Output:
+          {{ avahi_install.stdout | indent(2) }}
+          
+          🔍 Service Status:
+          {{ avahi_status.stdout | indent(2) }}
+      when: 
+        - not (avahi_copy.failed | default(false))
+        - not (avahi_install.failed | default(false))
+        - avahi_status.rc == 0
+
+    - name: "🧹 AVAHI → Clean up temporary directory"
+      file:
+        path: /tmp/avahi-advertiser
+        state: absent
+      when: avahi_dir_created.changed | default(false)
+
+    # =============================================================================
     # VERIFICATION AND TESTING
     # =============================================================================
     - name: "✅ VERIFY → Check MetalLB pods status"

@@ -78,11 +78,15 @@ ansible-debian-vm/
 │   ├── ansible.cfg         # Service-specific Ansible config
 │   ├── install-minikube.yml # Minikube installation playbook
 │   └── inventory.yml.j2    # Dynamic inventory template
-└── metallb-svc/            # MetalLB LoadBalancer service  
+└── metallb-svc/            # MetalLB LoadBalancer service with Avahi mDNS advertising
     ├── ansible.cfg         # Service-specific Ansible config
     ├── install-metallb.yml # MetalLB installation playbook
     ├── inventory.yml.j2    # Dynamic inventory template
-    └── README.md           # Detailed MetalLB documentation
+    ├── README.md           # Detailed MetalLB documentation
+    └── avahi-advertiser/   # Automatic mDNS service advertisement
+        ├── avahi_k8s_advertiser.py   # Kubernetes to Avahi bridge
+        ├── install.sh                 # Installation script
+        └── avahi-k8s-advertiser.service  # Systemd service unit
 ```
 
 ## Usage
@@ -171,7 +175,7 @@ Deploys a complete minikube Kubernetes cluster configured with `--driver=none` f
 ```
 
 ### metallb-svc  
-Adds MetalLB LoadBalancer support to existing minikube clusters, enabling services to receive external IP addresses directly accessible from the host network.
+Adds MetalLB LoadBalancer support to existing minikube clusters, enabling services to receive external IP addresses directly accessible from the host network. Includes automatic mDNS/Avahi service advertisement for zero-configuration service discovery.
 
 **Prerequisites:** Existing minikube cluster (deployed via minikube-svc)
 
@@ -181,6 +185,11 @@ Adds MetalLB LoadBalancer support to existing minikube clusters, enabling servic
 - Automatic IP range calculation
 - Custom IP range support
 - Optional test service deployment
+- **Avahi mDNS Advertiser**: Automatically advertises Kubernetes services:
+  - LoadBalancer services → A records (hostname.local → IP)
+  - NodePort services → mDNS-SD service records (servicename.local:port)
+  - Real-time service discovery via dns-sd, avahi-browse, etc.
+  - Automatic avahi-daemon reload on configuration changes
 
 **Usage:**
 ```bash
@@ -192,6 +201,19 @@ Adds MetalLB LoadBalancer support to existing minikube clusters, enabling servic
 
 # Include test service
 ./install.py --test-service metallb-svc <hostname>
+```
+
+**Service Discovery:**
+After deployment, services are automatically discoverable on the local network:
+```bash
+# Browse for advertised services
+dns-sd -B _http._tcp local.
+
+# Resolve a LoadBalancer service
+dns-sd -G v4 myservice.local
+
+# Lookup a NodePort service
+dns-sd -L myservice _http._tcp local.
 ```
 
 ## Available Nodes

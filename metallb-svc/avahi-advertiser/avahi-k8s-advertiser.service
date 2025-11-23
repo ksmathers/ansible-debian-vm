@@ -1,0 +1,40 @@
+[Unit]
+Description=Kubernetes Avahi Advertiser Service
+Documentation=https://github.com/ksmathers/ansible-debian-vm/tree/master/metallb-svc/avahi-advertiser
+After=network.target avahi-daemon.service
+Wants=avahi-daemon.service
+PartOf=avahi-daemon.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# Path to the Python script
+ExecStart=/usr/local/bin/avahi_k8s_advertiser.py
+
+# Environment variables
+Environment="AVAHI_HOSTS_FILE=/etc/avahi/hosts"
+Environment="AVAHI_SERVICES_DIR=/etc/avahi/services"
+Environment="LOG_LEVEL=INFO"
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security settings
+# Run with limited capabilities (still needs root for file access)
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=avahi-k8s-advertiser
+
+# Resource limits
+MemoryLimit=256M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
